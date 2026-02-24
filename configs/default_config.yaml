@@ -1,0 +1,61 @@
+# EAE-SpatialFlow v4 — Default Configuration
+# ============================================
+# All numeric values have biological rationale documented in comments.
+
+# ── Data ────────────────────────────────────────────────────────────────────
+resolution_um: 1.0          # Xenium pixel size in µm (1.0 after binning; 0.2138 raw)
+mirror_bilateral: true      # Pool bilateral lesion data (increase niche coverage)
+n_gene_features: 500        # HVG count for node features (None = use all genes)
+
+# ── Spatial Graph ──────────────────────────────────────────────────────────
+spatial_radius_um: 50.0     # 50 µm ≈ 3–4 cell diameters (paracrine signalling range)
+spatial_sigma_um: 25.0      # Gaussian kernel σ for spatial edge weights
+lr_database: "fallback"     # "cellchat" | "omnipath" | path to custom TSV | "fallback"
+lr_min_weight: 0.5          # Minimum LR pair prior confidence
+lr_expr_threshold: 0.1      # Minimum log1p expression for LR detection
+
+# ── GNN Architecture ─────────────────────────────────────────────────────
+hidden_dim: 64              # GATv2 per-head hidden dimension
+latent_dim: 64              # Niche State Manifold dimension (Z ∈ ℝ⁶⁴)
+n_genes_reconstruct: 500    # Genes reconstructed by decoder (for ELBO)
+attn_heads: 4               # GATv2 multi-head count (≥4 per spec)
+dropout: 0.1
+temporal_mode: "gru"        # "gru" | "ode"
+gru_hidden: 128             # GRU hidden state size
+projection_dim: 128         # Contrastive projection head output dim
+
+# ── Training ──────────────────────────────────────────────────────────────
+n_epochs: 50
+learning_rate: 0.001
+weight_decay: 0.0001
+warmup_steps: 500           # KL annealing warmup (prevents latent collapse)
+checkpoint_every: 10
+
+# ── Loss weights ─────────────────────────────────────────────────────────
+triplet_margin: 1.0
+lambda_triplet: 1.0         # Trajectory contrastive loss weight
+lambda_align: 0.3           # Cross-animal niche alignment
+lambda_temporal: 0.2        # Temporal consistency smoothness
+lambda_velocity: 0.1        # Velocity direction regularisation
+
+# ── Velocity & Divergence ─────────────────────────────────────────────────
+velocity_smooth_sigma: 0.5  # Gaussian smoothing σ along time axis (0 = off)
+learn_inf_axis: false       # Learnable inflammatory axis (vs. set from data)
+div_knn_k: 15               # KNN for finite-difference divergence estimation
+bifurcation_threshold: 0.5  # Normalised divergence threshold for bifurcation call
+
+# ── Attribution ──────────────────────────────────────────────────────────
+n_ig_steps: 50              # Integrated Gradients Riemann steps
+noise_tunnel: false         # NoiseTunnel smoothing for IG (slower, lower variance)
+n_top_genes: 50             # Genes reported in relapse_driving_genes.tsv
+
+# ── Scalability ──────────────────────────────────────────────────────────
+# NeighborLoader settings (used externally in train.py)
+neighbor_loader_sizes: [10, 5]     # Neighbour sampling sizes per GATv2 layer
+batch_size: 2048                    # Cells per NeighborLoader batch
+num_workers: 4
+
+# ── Output ────────────────────────────────────────────────────────────────
+output_dir: "outputs"
+figure_dpi: 150
+embeddings_fname: "latent_embeddings.h5ad"

@@ -1,0 +1,47 @@
+# EAE-SpatialFlow v4 — Core requirements
+# ========================================
+
+# Core scientific stack
+numpy>=1.24.0
+scipy>=1.10.0
+pandas>=2.0.0
+scikit-learn>=1.2.0
+scikit-image>=0.20.0
+
+# Deep learning
+torch>=2.0.0
+torch-geometric>=2.3.0       # GATv2Conv, NeighborLoader, etc.
+
+# Optional: CUDA-accelerated torch-geometric dependencies
+# torch-scatter>=2.1.0
+# torch-sparse>=0.6.17
+# torch-cluster>=1.6.1
+
+# Spatial / graph
+# METIS optional for ClusterGCN: python-metis
+
+# Captum (feature attribution)
+captum>=0.7.0
+
+# Visualization
+matplotlib>=3.7.0
+umap-learn>=0.5.3
+
+# Data I/O
+anndata>=0.9.0
+pyarrow>=12.0.0               # for parquet
+pyyaml>=6.0
+
+# Distance transform / geodesic
+# skimage.graph.MCP_Geometric is part of scikit-image (above)
+
+# Clustering (Leiden)
+# leidenalg>=0.10.0           # optional, falls back to KMeans
+# igraph>=0.10.0              # required for leidenalg
+
+# Temporal ODE (alternative to GRU bridge)
+# torchdiffeq>=0.2.3          # optional Neural ODE solver
+
+# Development / testing
+pytest>=7.0.0
+pytest-cov>=4.0.0
