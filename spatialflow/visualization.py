@@ -58,9 +58,14 @@ except ImportError:
 try:
     from umap import UMAP
     HAS_UMAP = True
-except ImportError:
+except Exception as exc:
+    # Some environments fail at import-time due to numba cache/runtime issues.
     HAS_UMAP = False
-    warnings.warn("umap-learn not installed — UMAP projections unavailable.", ImportWarning)
+    UMAP = None
+    warnings.warn(
+        f"UMAP unavailable ({type(exc).__name__}: {exc}) — falling back to non-UMAP paths.",
+        ImportWarning,
+    )
 
 try:
     from sklearn.preprocessing import MinMaxScaler

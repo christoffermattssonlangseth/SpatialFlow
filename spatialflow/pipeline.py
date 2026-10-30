@@ -227,7 +227,7 @@ class EAESpatialFlow:
             expr = np.concatenate([expr, expr], axis=0)
             ct_emb = np.concatenate([ct_emb, ct_emb], axis=0)
             tp_arr = np.concatenate([tp_arr, tp_arr])
-            xy_for_graph = np.concatenate([xy, anat_result["xy_original"]])
+            xy_for_graph = np.concatenate([xy, anat_result["xy_original"]], axis=0)
         else:
             xy_for_graph = xy
 
@@ -249,6 +249,7 @@ class EAESpatialFlow:
 
         section["graph"] = graph
         section["anat_features"] = anat_feats
+        section["xy_for_graph"] = xy_for_graph.astype(np.float32, copy=False)
         section["tp_idx"] = tp_idx
         section["gene_names_lower"] = gene_names
         return section
@@ -290,6 +291,62 @@ class EAESpatialFlow:
                 device=str(self.device),
             )
 
+    def _initialise_inflammatory_axis(self, sections: List[Dict]) -> None:
+        """
+        Initialise inflammatory axis from section cell-type labels.
+
+        Uses the current model embeddings and InflammatoryAxisDefiner heuristics.
+        """
+        if self.model is None or self.velocity_module._axis_set:
+            return
+
+        axis_definer = InflammatoryAxisDefiner(
+            activated_types=self.config.get("activated_cell_types"),
+            quiescent_types=self.config.get("quiescent_cell_types"),
+        )
+
+        zs: List[Tensor] = []
+        ct_all: List[str] = []
+        self.model.eval()
+        with torch.no_grad():
+            for sec in sections:
+                graph = sec["graph"]
+                x = (graph["x"] if isinstance(graph, dict) else graph.x).to(self.device)
+                ei = (graph["edge_index"] if isinstance(graph, dict) else graph.edge_index).to(self.device)
+                ea = (
+                    graph.get("edge_attr") if isinstance(graph, dict)
+                    else getattr(graph, "edge_attr", None)
+                )
+                if ea is not None:
+                    ea = ea.to(self.device)
+
+                out = self.model.forward_single(x, ei, ea)
+                z = out["mu"].detach()
+                cts = [str(c) for c in sec.get("cell_types", [])]
+                if not cts:
+                    continue
+
+                # Mirroring doubles node count in the graph; repeat labels to match.
+                if len(cts) != z.shape[0]:
+                    reps = int(np.ceil(z.shape[0] / max(1, len(cts))))
+                    cts = (cts * reps)[: z.shape[0]]
+
+                zs.append(z)
+                ct_all.extend(cts)
+
+        if not zs:
+            logger.warning("No embeddings available to initialise inflammatory axis.")
+            return
+
+        z_all = torch.cat(zs, dim=0)
+        axis_definer.extract_axis(z_all, ct_all, self.velocity_module)
+        if self.velocity_module._axis_set:
+            logger.info("Inflammatory axis initialised from data-driven cell-type anchors.")
+        else:
+            logger.warning(
+                "Inflammatory axis initialisation failed; momentum may remain uninformative."
+            )
+
     # ------------------------------------------------------------------
     # Training
     # ------------------------------------------------------------------
@@ -326,10 +383,12 @@ class EAESpatialFlow:
         in_channels = x0.shape[1]
         self._in_channels = in_channels
         self._init_model(in_channels)
+        self._initialise_inflammatory_axis(processed)
 
         optimizer = optim.AdamW(
             list(self.model.parameters()) +
-            list(self.divergence_scorer.parameters()),
+            list(self.divergence_scorer.parameters()) +
+            list(self.velocity_module.parameters()),
             lr=lr, weight_decay=1e-4,
         )
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_epochs)
@@ -449,10 +508,10 @@ class EAESpatialFlow:
 
         self.model.eval()
         results = {}
+        prepared = [self.preprocess_section(s) if "graph" not in s else s for s in sections]
+        self._initialise_inflammatory_axis(prepared)
 
-        for sec in sections:
-            if "graph" not in sec:
-                sec = self.preprocess_section(sec)
+        for sec in prepared:
 
             graph = sec["graph"]
             x  = (graph["x"] if isinstance(graph, dict) else graph.x).to(self.device)
@@ -542,7 +601,22 @@ class EAESpatialFlow:
         )
         rlcs_feat = self.attributor.top_rlcs_features(attr_out["rlcs_attributions"])
 
-        xy = section["xy_coords"]
+        xy = section.get("xy_for_graph", section["xy_coords"])
+        xy = np.asarray(xy, dtype=np.float32)
+        n_nodes = x.shape[0]
+        orig_n_xy = xy.shape[0]
+        if orig_n_xy == 0:
+            raise ValueError(
+                f"Section {section.get('section_id', '<unknown>')} has empty xy coordinates."
+            )
+        if orig_n_xy != n_nodes:
+            reps = int(np.ceil(n_nodes / orig_n_xy))
+            xy = np.tile(xy, (reps, 1))[:n_nodes]
+            logger.warning(
+                "Coordinate/node mismatch in section %s (xy=%d, nodes=%d); "
+                "repeating coordinates to align for hotspot attribution.",
+                section.get("section_id", "<unknown>"), orig_n_xy, n_nodes,
+            )
         if bif_idx is not None:
             xy_subset = xy[bif_idx.numpy()]
         else:
@@ -632,8 +706,19 @@ class EAESpatialFlow:
     def load_checkpoint(self, path: Union[str, Path]) -> None:
         ckpt = torch.load(path, map_location=self.device)
         if self.model is None and "config" in ckpt:
-            # Model not yet built — build from config
-            self._init_model(self._in_channels or 512)
+            # Model not yet built — infer in_channels from checkpoint if needed.
+            inferred_in = self._in_channels
+            state = ckpt.get("model_state") or {}
+            if inferred_in is None:
+                for key in (
+                    "encoder.encoder.conv1.fallback_lin.weight",
+                    "encoder.encoder.conv1.res_proj.weight",
+                ):
+                    w = state.get(key)
+                    if w is not None and w.ndim == 2:
+                        inferred_in = int(w.shape[1])
+                        break
+            self._init_model(inferred_in or 512)
         if self.model and "model_state" in ckpt and ckpt["model_state"]:
             self.model.load_state_dict(ckpt["model_state"])
         self.velocity_module.load_state_dict(ckpt["velocity_state"])

@@ -143,25 +143,33 @@ def knn_divergence(
     div : (N,)
     """
     N, D = z.shape
-    # Pairwise distances (chunked for memory efficiency)
-    chunk = min(512, N)
+    if N <= 1:
+        return torch.zeros(N, device=z.device, dtype=z.dtype)
+
+    k_eff = min(max(int(k), 1), N - 1)
+    # Pairwise distances (chunked for memory efficiency).
+    # MPS has tighter memory behavior, so use a smaller chunk there.
+    chunk_cap = 256 if z.device.type == "mps" else 512
+    chunk = min(chunk_cap, N)
     divs = []
+    z_norm2 = (z ** 2).sum(dim=1)  # (N,)
+    z_t = z.transpose(0, 1)        # (D, N)
 
     for start in range(0, N, chunk):
         end = min(start + chunk, N)
         z_chunk = z[start:end]           # (B, D)
         v_chunk = velocity[start:end]    # (B, D)
 
-        # Distances from chunk to all N
-        diffs = z_chunk.unsqueeze(1) - z.unsqueeze(0)   # (B, N, D)
-        dists2 = (diffs ** 2).sum(dim=-1)               # (B, N)
+        # Distances from chunk to all N without materialising (B, N, D).
+        z_chunk_norm2 = (z_chunk ** 2).sum(dim=1, keepdim=True)    # (B, 1)
+        dists2 = z_chunk_norm2 + z_norm2.unsqueeze(0) - 2.0 * (z_chunk @ z_t)
+        dists2 = dists2.clamp_min(0.0)
 
-        # Exclude self (set to inf)
-        dists2[:, start:end] += torch.eye(
-            end - start, N, device=z.device
-        ) * 1e12
+        # Exclude self distances for the current chunk rows.
+        local = torch.arange(end - start, device=z.device)
+        dists2[local, start + local] = float("inf")
 
-        _, nn_idx = dists2.topk(k, dim=1, largest=False)   # (B, k)
+        _, nn_idx = dists2.topk(k_eff, dim=1, largest=False)   # (B, k)
 
         div_chunk = torch.zeros(end - start, device=z.device, dtype=z.dtype)
         for b in range(end - start):
@@ -271,6 +279,10 @@ class DivergenceScorer(nn.Module):
         # Peri-lesional = moderate d_CC (not in CC, not far WM periphery)
         relapse_nursery_mask = bifurcation_mask.clone()
         if anatomical_features is not None:
+            # Accept numpy or tensor input; keep comparisons on the model device.
+            anatomical_features = torch.as_tensor(
+                anatomical_features, dtype=z.dtype, device=z.device
+            )
             d_cc_norm = anatomical_features[:, 0]  # d_CC (µm)
             # Peri-lesional = d_CC in 50–300 µm range (configurable)
             peri_lesional = (d_cc_norm > 50.0) & (d_cc_norm < 300.0)

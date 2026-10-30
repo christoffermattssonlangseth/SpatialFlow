@@ -41,6 +41,8 @@ Biological rationale:
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 import warnings
 from typing import Dict, List, Optional, Tuple
 
@@ -51,6 +53,16 @@ import torch.nn.functional as F
 from torch import Tensor
 
 logger = logging.getLogger(__name__)
+
+
+def _normalise_cell_type(label: str) -> str:
+    """Normalise free-text cell-type labels to stable snake_case tokens."""
+    ascii_label = (
+        unicodedata.normalize("NFKD", str(label))
+        .encode("ascii", "ignore")
+        .decode("ascii")
+    )
+    return re.sub(r"[^a-z0-9]+", "_", ascii_label.strip().lower()).strip("_")
 
 
 # ---------------------------------------------------------------------------
@@ -271,11 +283,15 @@ class NicheVelocity(nn.Module):
         momentum : (T, N) or (N,)
         """
         if not self._axis_set:
-            warnings.warn(
-                "Inflammatory axis not set — momentum scores will be arbitrary. "
-                "Call set_inflammatory_axis() before use.",
-                stacklevel=2,
-            )
+            # Axis may have been restored via state_dict without toggling _axis_set.
+            if float(self._inf_axis.detach().norm()) > 1e-8:
+                self._axis_set = True
+            else:
+                warnings.warn(
+                    "Inflammatory axis not set — momentum scores will be arbitrary. "
+                    "Call set_inflammatory_axis() before use.",
+                    stacklevel=2,
+                )
         axis = self.inflammatory_axis            # (D,)
         if velocity.dim() == 3:
             # (T, N, D) × (D,) → (T, N)
@@ -369,10 +385,10 @@ class InflammatoryAxisDefiner:
         quiescent_types: Optional[List[str]] = None,
     ) -> None:
         self.activated_types = set(
-            activated_types or self.ACTIVATED_DEFAULTS
+            _normalise_cell_type(x) for x in (activated_types or self.ACTIVATED_DEFAULTS)
         )
         self.quiescent_types = set(
-            quiescent_types or self.QUIESCENT_DEFAULTS
+            _normalise_cell_type(x) for x in (quiescent_types or self.QUIESCENT_DEFAULTS)
         )
 
     def extract_axis(
@@ -391,10 +407,29 @@ class InflammatoryAxisDefiner:
         cell_types : list of N cell type strings (lowercase)
         velocity_module : NicheVelocity instance to update
         """
-        ct_arr = np.array([c.lower() for c in cell_types])
+        ct_arr = np.array([_normalise_cell_type(c) for c in cell_types], dtype=object)
 
         act_mask = np.isin(ct_arr, list(self.activated_types))
         qui_mask = np.isin(ct_arr, list(self.quiescent_types))
+
+        # Fallback keyword matching for dataset-specific free-text annotations.
+        if act_mask.sum() == 0 or qui_mask.sum() == 0:
+            act_keywords = (
+                "activated", "inflammatory", "ifn", "cytotoxic", "reactive",
+                "macrophage", "microglia",
+            )
+            qui_keywords = (
+                "homeostatic", "mature", "oligodendrocyte", "endothelial",
+                "neuron", "pericyte", "quiescent",
+            )
+            act_mask = np.array(
+                [any(k in ct for k in act_keywords) for ct in ct_arr], dtype=bool
+            )
+            qui_mask = np.array(
+                [any(k in ct for k in qui_keywords) for ct in ct_arr], dtype=bool
+            )
+            # Prioritise activated assignment for overlapping labels.
+            qui_mask = qui_mask & (~act_mask)
 
         if act_mask.sum() == 0 or qui_mask.sum() == 0:
             logger.warning(
@@ -404,8 +439,8 @@ class InflammatoryAxisDefiner:
             )
             return
 
-        act_z = z[torch.tensor(act_mask, dtype=torch.bool)]
-        qui_z = z[torch.tensor(qui_mask, dtype=torch.bool)]
+        act_z = z[torch.as_tensor(act_mask, dtype=torch.bool, device=z.device)]
+        qui_z = z[torch.as_tensor(qui_mask, dtype=torch.bool, device=z.device)]
         velocity_module.set_inflammatory_axis(act_z, qui_z)
         logger.info(
             "Inflammatory axis computed from %d activated / %d quiescent cells.",

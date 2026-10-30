@@ -342,12 +342,43 @@ class TestNicheVelocity:
         mom = vel_module.inflammatory_momentum(velocity)
         assert mom.shape == (1, 10)
 
+    def test_axis_definer_matches_free_text_labels(self):
+        from spatialflow.velocity import InflammatoryAxisDefiner, NicheVelocity
+
+        vel_module = NicheVelocity(latent_dim=16)
+        z = torch.randn(6, 16)
+        cell_types = [
+            "Activated Microglia/Macrophage",
+            "IFN-γ-Activated Microglia",
+            "Reactive Astrocyte",
+            "Mature Oligodendrocyte",
+            "CNS Endothelial Cell (spinal)",
+            "Spinal Interneuron",
+        ]
+
+        InflammatoryAxisDefiner().extract_axis(z, cell_types, vel_module)
+        assert vel_module._axis_set
+        assert torch.isfinite(vel_module.inflammatory_axis).all()
+
 
 # ---------------------------------------------------------------------------
 # DivergenceScorer
 # ---------------------------------------------------------------------------
 
 class TestDivergenceScorer:
+
+    def test_knn_divergence_chunked_large_n(self):
+        from spatialflow.divergence import knn_divergence
+
+        torch.manual_seed(0)
+        N, D = 1000, 16
+        z = torch.randn(N, D)
+        velocity = torch.randn(N, D)
+
+        div = knn_divergence(z, velocity, k=15)
+
+        assert div.shape == (N,)
+        assert torch.isfinite(div).all()
 
     def test_divergence_output_shape(self, latent_z):
         from spatialflow.divergence import DivergenceScorer

@@ -165,10 +165,10 @@ def main():
         from umap import UMAP
         reducer = UMAP(n_neighbors=30, min_dist=0.3, random_state=42)
         umap_2d = reducer.fit_transform(Z)
-    except ImportError:
+    except Exception as e:
         from sklearn.decomposition import PCA
         umap_2d = PCA(n_components=2).fit_transform(Z)
-        logger.warning("umap-learn not available — using PCA projection.")
+        logger.warning("UMAP unavailable (%s) — using PCA projection.", e)
 
     # --- Leiden clustering ---
     cluster_labels = leiden_cluster_z(Z, resolution=args.leiden_resolution)
